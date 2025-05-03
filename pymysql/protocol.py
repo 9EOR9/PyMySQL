@@ -8,6 +8,11 @@ from . import err
 import struct
 import sys
 
+try:
+   import mdb
+   mdbProt= mdb.Protocol()
+except ImportError:
+   mdbProt= None
 
 DEBUG = False
 
@@ -115,22 +120,35 @@ class MysqlPacket:
         return result
 
     def read_uint16(self):
-        result = struct.unpack_from("<H", self._data, self._position)[0]
+        if mdbProt:
+            result= mdbProt.pkt_uint16(self._data[self._position:])
+        else:
+            result = struct.unpack_from("<H", self._data, self._position)[0]
         self._position += 2
         return result
 
     def read_uint24(self):
-        low, high = struct.unpack_from("<HB", self._data, self._position)
+        if mdbProt:
+            result= mdbProt.pkt_uint24(self._data[self._position:])
+        else:
+            low, high = struct.unpack_from("<HB", self._data, self._position)
+            result = low + (high << 16)
         self._position += 3
-        return low + (high << 16)
+        return result
 
     def read_uint32(self):
-        result = struct.unpack_from("<I", self._data, self._position)[0]
+        if mdbProt:
+            result= mdbProt.pkt_uint32(self._data[self._position:])
+        else:
+            result = struct.unpack_from("<I", self._data, self._position)[0]
         self._position += 4
         return result
 
     def read_uint64(self):
-        result = struct.unpack_from("<Q", self._data, self._position)[0]
+        if mdbProt:
+            result= mdbProt.pkt_uint64(self._data[self._position:])
+        else:
+            result = struct.unpack_from("<Q", self._data, self._position)[0]
         self._position += 8
         return result
 
@@ -148,17 +166,23 @@ class MysqlPacket:
         Length coded numbers can be anywhere from 1 to 9 bytes depending
         on the value of the first byte.
         """
-        c = self.read_uint8()
-        if c == NULL_COLUMN:
-            return None
-        if c < UNSIGNED_CHAR_COLUMN:
-            return c
-        elif c == UNSIGNED_SHORT_COLUMN:
-            return self.read_uint16()
-        elif c == UNSIGNED_INT24_COLUMN:
-            return self.read_uint24()
-        elif c == UNSIGNED_INT64_COLUMN:
-            return self.read_uint64()
+
+        if mdbProt:
+            val, inc = mdbProt.pkt_lencint(self._data[self._position:])
+            self._position += inc
+            return val
+        else:
+            c = self.read_uint8()
+            if c == NULL_COLUMN:
+                return None
+            if c < UNSIGNED_CHAR_COLUMN:
+                return c
+            elif c == UNSIGNED_SHORT_COLUMN:
+                return self.read_uint16()
+            elif c == UNSIGNED_INT24_COLUMN:
+                return self.read_uint24()
+            elif c == UNSIGNED_INT64_COLUMN:
+                return self.read_uint64()
 
     def read_length_coded_string(self):
         """Read a 'Length Coded String' from the data buffer.
@@ -167,10 +191,15 @@ class MysqlPacket:
         (unsigned, positive) integer represented in 1-9 bytes followed by
         that many bytes of binary data.  (For example "cat" would be "3cat".)
         """
-        length = self.read_length_encoded_integer()
-        if length is None:
-            return None
-        return self.read(length)
+        if mdbProt:
+            val, inc = mdbProt.pkt_lencstr(self._data[self._position:], False)
+            self._position += inc
+            return val
+        else:
+            length = self.read_length_encoded_integer()
+            if length is None:
+                return None
+            return self.read(length)
 
     def read_struct(self, fmt):
         s = struct.Struct(fmt)
@@ -238,12 +267,25 @@ class FieldDescriptorPacket(MysqlPacket):
 
         This is compatible with MySQL 4.1+ (not compatible with MySQL 4.0).
         """
-        self.catalog = self.read_length_coded_string()
-        self.db = self.read_length_coded_string()
-        self.table_name = self.read_length_coded_string().decode(encoding)
-        self.org_table = self.read_length_coded_string().decode(encoding)
-        self.name = self.read_length_coded_string().decode(encoding)
-        self.org_name = self.read_length_coded_string().decode(encoding)
+        if mdbProt:
+            (
+                self.catalog,
+                self.db,
+                self.table_name,
+                self.org_table,
+                self.name,
+                self.org_name,
+                total
+            ) = mdbProt.pkt_lencstr(self._data[self._position:],
+                                    False, False, True, True, True, True)
+            self._position += total
+        else:
+            self.catalog = self.read_length_coded_string()
+            self.db = self.read_length_coded_string()
+            self.table_name = self.read_length_coded_string().decode(encoding)
+            self.org_table = self.read_length_coded_string().decode(encoding)
+            self.name = self.read_length_coded_string().decode(encoding)
+            self.org_name = self.read_length_coded_string().decode(encoding)
         (
             self.charsetnr,
             self.length,

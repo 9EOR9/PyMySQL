@@ -28,6 +28,12 @@ from .protocol import (
 from . import err, VERSION_STRING
 
 try:
+   import mdb
+   mdbProt= mdb.Protocol()
+except ImportError:
+   mdbProt= None
+
+try:
     import ssl
 
     SSL_ENABLED = True
@@ -750,9 +756,11 @@ class Connection:
         while True:
             packet_header = self._read_bytes(4)
             # if DEBUG: dump_packet(packet_header)
-
-            btrl, btrh, packet_number = struct.unpack("<HBB", packet_header)
-            bytes_to_read = btrl + (btrh << 16)
+            if mdbProt:
+                (bytes_to_read, packet_number) = mdbProt.pkt_header(packet_header)
+            else:
+                btrl, btrh, packet_number = struct.unpack("<HBB", packet_header)
+                bytes_to_read = btrl + (btrh << 16)
             if packet_number != self._next_seq_id:
                 self._force_close()
                 if packet_number == 0:
@@ -1106,17 +1114,29 @@ class Connection:
         self.server_version = data[i:server_end].decode("latin1")
         i = server_end + 1
 
-        self.server_thread_id = struct.unpack("<I", data[i : i + 4])
+        if mdbProt:
+            self.server_thread_id = mdbProt.pkt_uint32(data[i:])
+        else:
+            self.server_thread_id = struct.unpack("<I", data[i : i + 4])
         i += 4
 
         self.salt = data[i : i + 8]
         i += 9  # 8 + 1(filler)
 
-        self.server_capabilities = struct.unpack("<H", data[i : i + 2])[0]
+        if mdbProt:
+            self.server_capabilities = mdbProt.pkt_uint16(data[i:])
+        else:
+            self.server_capabilities = struct.unpack("<H", data[i : i + 2])[0]
         i += 2
 
         if len(data) >= i + 6:
-            lang, stat, cap_h, salt_len = struct.unpack("<BHHB", data[i : i + 6])
+            if mdbProt:
+                lang = data[i]
+                stat= mdbProt.pkt_uint16(data[i+1:])
+                cap_h= mdbProt.pkt_uint16(data[i+3:])
+                salt_len= data[i+5]
+            else:
+                lang, stat, cap_h, salt_len = struct.unpack("<BHHB", data[i : i + 6])
             i += 6
             # TODO: deprecate server_language and server_charset.
             # mysqlclient-python doesn't provide it.
@@ -1341,22 +1361,26 @@ class MySQLResult:
         self.rows = tuple(rows)
 
     def _read_row_from_packet(self, packet):
-        row = []
-        for encoding, converter in self.converters:
-            try:
-                data = packet.read_length_coded_string()
-            except IndexError:
-                # No more columns in this row
-                # See https://github.com/PyMySQL/PyMySQL/pull/434
-                break
-            if data is not None:
-                if encoding is not None:
-                    data = data.decode(encoding)
-                if DEBUG:
-                    print("DEBUG: DATA = ", data)
-                if converter is not None:
-                    data = converter(data)
-            row.append(data)
+        if mdbProt:
+            row, pos= mdbProt.pkt_txtrow(packet._data[packet._position:], self.converters)
+            packet._position += pos
+        else:
+            row = []
+            for encoding, converter in self.converters:
+                try:
+                    data = packet.read_length_coded_string()
+                except IndexError:
+                    # No more columns in this row
+                    # See https://github.com/PyMySQL/PyMySQL/pull/434
+                    break
+                if data is not None:
+                    if encoding is not None:
+                        data = data.decode(encoding)
+                    if DEBUG:
+                        print("DEBUG: DATA = ", data)
+                    if converter is not None:
+                        data = converter(data)
+                row.append(data)
         return tuple(row)
 
     def _get_descriptions(self):
