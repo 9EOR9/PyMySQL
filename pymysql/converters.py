@@ -84,7 +84,7 @@ def escape_bytes_prefixed(value, mapping=None):
 
 
 def escape_bytes(value, mapping=None):
-    return "'%s'" % value.decode("ascii", "surrogateescape").translate(_escape_table)
+    return "X'%s'" % value.hex()
 
 
 def escape_str(value, mapping=None):
